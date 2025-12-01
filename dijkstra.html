@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Simulación Visual OSPF - Topología Completa</title>
+    <style>
+        :root {
+            --bg: #121212;
+            --panel-bg: #1e1e1e;
+            --text: #e0e0e0;
+            --accent: #4CAF50; /* Verde OSPF */
+            --node-def: #424242;
+            --node-a: #8B4040; /* Color rojizo (ULSA) */
+            --node-b: #1E4E79; /* Color azulado (Chapi) */
+        }
+
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background-color: var(--bg);
+            color: var(--text);
+            margin: 0;
+            display: flex;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* Lienzo Principal */
+        #canvas-container {
+            flex: 2;
+            position: relative;
+            background: radial-gradient(circle at center, #1a1a1a 0%, #000 100%);
+            border-right: 2px solid #333;
+        }
+
+        canvas { display: block; width: 100%; height: 100%; }
+
+        /* Panel Lateral */
+        #sidebar {
+            flex: 1;
+            min-width: 350px;
+            max-width: 450px;
+            background-color: var(--panel-bg);
+            display: flex;
+            flex-direction: column;
+            padding: 20px;
+            box-shadow: -5px 0 15px rgba(0,0,0,0.5);
+            overflow-y: auto;
+        }
+
+        h2, h3 { margin-top: 0; border-bottom: 1px solid #444; padding-bottom: 10px; }
+
+        /* Panel de Control */
+        .controls {
+            margin-bottom: 20px;
+            text-align: center;
+        }
+
+        button {
+            background-color: var(--accent);
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            font-size: 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: transform 0.2s;
+            font-weight: bold;
+        }
+        button:hover { transform: scale(1.05); background-color: #45a049; }
+        button:disabled { background-color: #555; cursor: not-allowed; transform: none; }
+
+        /* Panel de Información (Hover) */
+        #info-panel {
+            background-color: #333;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            border-left: 5px solid #2196F3;
+            min-height: 80px;
+        }
+
+        /* Panel LSDB (Base de Datos) */
+        #lsdb-panel {
+            flex: 1;
+            background-color: #262626;
+            padding: 10px;
+            border-radius: 8px;
+            font-family: monospace;
+            overflow-y: auto;
+            border: 1px solid #444;
+        }
+
+        .lsdb-entry { margin-bottom: 5px; color: #aaa; font-size: 0.9em; }
+        .lsdb-title { color: #FFD700; font-weight: bold; margin-bottom: 10px; display: block;}
+
+        /* Tooltip flotante para el nodo */
+        #tooltip {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.9);
+            color: white;
+            padding: 10px;
+            border-radius: 5px;
+            pointer-events: none;
+            display: none;
+            border: 1px solid #555;
+            z-index: 100;
+        }
+
+        .status-log { margin-top: 10px; color: var(--accent); font-weight: bold; }
+        
+    </style>
+</head>
+<body>
+
+    <div id="canvas-container">
+        <canvas id="networkCanvas"></canvas>
+        <div id="tooltip"></div>
+    </div>
+
+    <div id="sidebar">
+        <div class="controls">
+            <button id="btnPlay" onclick="startSimulation()">▶ Iniciar Cálculo OSPF</button>
+            <button onclick="resetSim()" style="background-color:#555; margin-left:10px;">↺ Reset</button>
+            <div id="status" class="status-log">Listo para calcular...</div>
+        </div>
+
+        <h3>1. Inspección de Nodo (Pasa el mouse)</h3>
+        <div id="info-panel">
+            <p style="color:#888; font-style:italic;">Pasa el cursor sobre un router para ver su Lista de Adyacencia local.</p>
+        </div>
+
+        <h3>2. Memoria del Router A (LSDB)</h3>
+        <p style="font-size:0.85em; color:#ccc;">
+            Nota: Esta información <strong>ya existe</strong> en la memoria antes de calcular la ruta. Demuestra que OSPF conoce la topología completa.
+        </p>
+        <div id="lsdb-panel">
+            <span class="lsdb-title">BASE DE DATOS DE ESTADO DE ENLACE (Completa):</span>
+            <div id="lsdb-content"></div>
+        </div>
+    </div>
+
+<script>
+    // --- 1. CONFIGURACIÓN DE LA TOPOLOGÍA (COORDENADAS Y DATOS) ---
+    const canvas = document.getElementById('networkCanvas');
+    const ctx = canvas.getContext('2d');
+    
+    // Ajustamos tamaño del canvas
+    function resizeCanvas() {
+        canvas.width = document.getElementById('canvas-container').clientWidth;
+        canvas.height = document.getElementById('canvas-container').clientHeight;
+        draw(); // Redibujar al cambiar tamaño
+    }
+    window.addEventListener('resize', resizeCanvas);
+
+    // Coordenadas aproximadas basadas en tu imagen (escalables)
+    const nodes = {
+        'A': { x: 0.50, y: 0.15, label: 'A (ULSA)', color: '#8B4040', radius: 25 },
+        '1': { x: 0.25, y: 0.30, label: '1', color: '#424242', radius: 20 },
+        '4': { x: 0.80, y: 0.20, label: '4', color: '#424242', radius: 20 },
+        '2': { x: 0.45, y: 0.40, label: '2', color: '#424242', radius: 20 },
+        '3': { x: 0.65, y: 0.35, label: '3', color: '#2E7D32', radius: 22 }, // Verde en tu img
+        '5': { x: 0.10, y: 0.55, label: '5', color: '#424242', radius: 20 },
+        '6': { x: 0.35, y: 0.60, label: '6', color: '#424242', radius: 20 },
+        '7': { x: 0.60, y: 0.60, label: '7', color: '#2E7D32', radius: 22 }, // Verde en tu img
+        '8': { x: 0.85, y: 0.50, label: '8', color: '#424242', radius: 20 },
+        '9': { x: 0.25, y: 0.80, label: '9', color: '#424242', radius: 20 },
+        '10':{ x: 0.50, y: 0.85, label: '10', color: '#424242', radius: 20 },
+        'B': { x: 0.80, y: 0.85, label: 'B (Chapi)', color: '#1E4E79', radius: 28 }
+    };
+
+    // Definición de enlaces (Bidireccionales para el grafo visual, pero OSPF los trata igual)
+    const links = [
+        { u: 'A', v: '1', cost: 6 }, { u: 'A', v: '2', cost: 11 }, { u: 'A', v: '3', cost: 10 }, { u: 'A', v: '4', cost: 12 },
+        { u: '1', v: '2', cost: 30 }, { u: '1', v: '5', cost: 35 }, { u: '1', v: '6', cost: 125 },
+        { u: '2', v: '3', cost: 21 }, { u: '2', v: '6', cost: 50 }, { u: '2', v: '7', cost: 90 },
+        { u: '3', v: '7', cost: 70 }, { u: '3', v: '8', cost: 80 },
+        { u: '4', v: '8', cost: 75 },
+        { u: '5', v: '6', cost: 91 }, { u: '5', v: '9', cost: 24 },
+        { u: '6', v: '10', cost: 50 },
+        { u: '7', v: '10', cost: 10 }, { u: '7', v: 'B', cost: 40 },
+        { u: '8', v: 'B', cost: 40 },
+        { u: '9', v: '10', cost: 35 },
+        { u: '10', v: 'B', cost: 40 }
+    ];
+
+    // Variables de estado para la animación
+    let activeNode = null; // Nodo que se está procesando
+    let visitedNodes = new Set();
+    let currentPath = []; // Para dibujar la ruta final
+    let animationQueue = [];
+    let isAnimating = false;
+
+    // --- 2. FUNCIONES DE DIBUJO ---
+
+    function getCoords(id) {
+        return {
+            x: nodes[id].x * canvas.width,
+            y: nodes[id].y * canvas.height
+        };
+    }
+
+    function draw() {
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // 1. Dibujar Enlaces
+        links.forEach(link => {
+            const start = getCoords(link.u);
+            const end = getCoords(link.v);
+
+            ctx.beginPath();
+            
+            // Color de línea: Si es parte de la ruta final, Verde brillante.
+            let isPath = isInPath(link.u, link.v);
+            
+            ctx.strokeStyle = isPath ? '#00FF00' : '#555';
+            ctx.lineWidth = isPath ? 4 : 2;
+            
+            ctx.moveTo(start.x, start.y);
+            ctx.lineTo(end.x, end.y);
+            ctx.stroke();
+
+            // Dibujar Costo (Peso)
+            const midX = (start.x + end.x) / 2;
+            const midY = (start.y + end.y) / 2;
+            ctx.fillStyle = '#000'; // Fondo para el texto
+            ctx.fillRect(midX - 10, midY - 8, 20, 16);
+            ctx.fillStyle = '#bbb';
+            ctx.font = '12px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(link.cost, midX, midY);
+        });
+
+        // 2. Dibujar Nodos
+        for (let id in nodes) {
+            const n = nodes[id];
+            const pos = getCoords(id);
+
+            ctx.beginPath();
+            ctx.arc(pos.x, pos.y, n.radius, 0, Math.PI * 2);
+            
+            // Color del nodo dinámico
+            if (id === activeNode) ctx.fillStyle = '#FFD700'; // Amarillo (Procesando)
+            else if (visitedNodes.has(id)) ctx.fillStyle = '#4CAF50'; // Verde (Visitado)
+            else ctx.fillStyle = n.color; // Color normal
+
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+
+            // Texto del nodo
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 14px Arial';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(id, pos.x, pos.y);
+            
+            // Etiquetas externas para A y B
+            if(id === 'A' || id === 'B') {
+                ctx.fillStyle = n.color;
+                ctx.font = 'bold 16px Arial';
+                ctx.fillText(n.label.split(' ')[1].replace(/[()]/g, ''), pos.x, pos.y - 35);
+            }
+        }
+    }
+
+    function isInPath(u, v) {
+        for(let i=0; i < currentPath.length -1; i++) {
+            if ((currentPath[i] === u && currentPath[i+1] === v) || 
+                (currentPath[i] === v && currentPath[i+1] === u)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // --- 3. LÓGICA DE INTERACCIÓN (HOVER) ---
+    
+    // Construir Adyacencias para búsqueda rápida
+    const adjacency = {};
+    for (let id in nodes) adjacency[id] = [];
+    links.forEach(l => {
+        adjacency[l.u].push({ vec: l.v, cost: l.cost });
+        adjacency[l.v].push({ vec: l.u, cost: l.cost });
+    });
+
+    canvas.addEventListener('mousemove', (e) => {
+        const rect = canvas.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const mouseY = e.clientY - rect.top;
+        let hoveredNode = null;
+
+        // Detectar si el mouse está sobre un nodo
+        for (let id in nodes) {
+            const pos = getCoords(id);
+            const dx = mouseX - pos.x;
+            const dy = mouseY - pos.y;
+            if (Math.sqrt(dx*dx + dy*dy) < nodes[id].radius) {
+                hoveredNode = id;
+                break;
+            }
+        }
+
+        updateHoverInfo(hoveredNode, e.clientX, e.clientY);
+    });
+
+    function updateHoverInfo(nodeId, mouseX, mouseY) {
+        const panel = document.getElementById('info-panel');
+        const tooltip = document.getElementById('tooltip');
+
+        if (nodeId) {
+            canvas.style.cursor = 'pointer';
+            
+            // Crear HTML de Adyacencia
+            let neighborsHtml = adjacency[nodeId].map(n => 
+                `<li>Vecino: <strong>${n.vec}</strong> | Costo: ${n.cost}ms</li>`
+            ).join('');
+
+            panel.innerHTML = `
+                <strong style="color:white; font-size:1.2em">Router ${nodes[nodeId].label}</strong><br>
+                <span style="color:#aaa">Lista de Adyacencia (Vecinos):</span>
+                <ul style="margin-top:5px; padding-left:20px; color:#ddd;">${neighborsHtml}</ul>
+            `;
+
+            // Tooltip flotante
+            tooltip.style.display = 'block';
+            tooltip.style.left = (mouseX + 15) + 'px';
+            tooltip.style.top = (mouseY + 15) + 'px';
+            tooltip.innerHTML = `Router ${nodeId}`;
+        } else {
+            canvas.style.cursor = 'default';
+            panel.innerHTML = `<p style="color:#888; font-style:italic;">Pasa el cursor sobre un router para ver su Lista de Adyacencia local.</p>`;
+            tooltip.style.display = 'none';
+        }
+    }
+
+    // --- 4. LOGICA DE SIMULACIÓN Y LSDB ---
+
+    function populateLSDB() {
+        const div = document.getElementById('lsdb-content');
+        let html = '';
+        // Mostramos la topología completa como si fuera texto
+        for(let node in adjacency) {
+            let line = `LSA Router ${node}: [`;
+            let adjs = adjacency[node].map(n => `${n.vec}(${n.cost})`).join(', ');
+            line += adjs + ']';
+            html += `<div class="lsdb-entry">${line}</div>`;
+        }
+        div.innerHTML = html;
+    }
+
+    async function startSimulation() {
+        if(isAnimating) return;
+        isAnimating = true;
+        document.getElementById('btnPlay').disabled = true;
+        resetVars();
+        
+        // Ejecutar Dijkstra lógico para grabar los pasos
+        let dist = {};
+        let prev = {};
+        let unvisited = new Set(Object.keys(nodes));
+        
+        for(let n in nodes) dist[n] = Infinity;
+        dist['A'] = 0;
+
+        while(unvisited.size > 0) {
+            // Encontrar nodo con menor distancia
+            let u = null;
+            let minDist = Infinity;
+            for (let node of unvisited) {
+                if (dist[node] < minDist) {
+                    minDist = dist[node];
+                    u = node;
+                }
+            }
+
+            if (u === null || u === 'B') break; // Llegamos al destino o no hay camino
+            
+            // ANIMACION: Marcar nodo actual como procesando
+            await animStep(u, null, "Analizando Router " + u);
+
+            unvisited.delete(u);
+            visitedNodes.add(u);
+
+            // Revisar vecinos
+            let neighbors = adjacency[u];
+            for (let nObj of neighbors) {
+                let v = nObj.vec;
+                let alt = dist[u] + nObj.cost;
+                if (alt < dist[v]) {
+                    dist[v] = alt;
+                    prev[v] = u;
+                }
+            }
+        }
+
+        // Reconstruir camino
+        let u = 'B';
+        let path = [];
+        if (prev['B'] || u === 'A') {
+            while (u) {
+                path.unshift(u);
+                u = prev[u];
+            }
+        }
+        
+        // Animación Final
+        currentPath = path;
+        document.getElementById('status').innerText = "¡Ruta Óptima Calculada! Costo Total: " + dist['B'] + "ms";
+        document.getElementById('status').style.color = "#00FF00";
+        activeNode = null;
+        draw();
+        isAnimating = false;
+        document.getElementById('btnPlay').innerText = "Reiniciar";
+        document.getElementById('btnPlay').onclick = resetSim;
+        document.getElementById('btnPlay').disabled = false;
+    }
+
+    function animStep(node, path, msg) {
+        return new Promise(resolve => {
+            activeNode = node;
+            document.getElementById('status').innerText = msg;
+            draw();
+            setTimeout(resolve, 600); // Velocidad de animación
+        });
+    }
+
+    function resetVars() {
+        visitedNodes.clear();
+        currentPath = [];
+        activeNode = null;
+        draw();
+    }
+
+    function resetSim() {
+        isAnimating = false;
+        resetVars();
+        document.getElementById('status').innerText = "Listo para calcular...";
+        document.getElementById('status').style.color = "var(--accent)";
+        document.getElementById('btnPlay').innerText = "▶ Iniciar Cálculo OSPF";
+        document.getElementById('btnPlay').disabled = false;
+        document.getElementById('btnPlay').onclick = startSimulation;
+    }
+
+    // Inicialización
+    resizeCanvas();
+    populateLSDB(); // Carga inmediata de la topología (Requisito 3)
+
+</script>
+</body>
+</html>
